@@ -1,0 +1,17 @@
+{
+  "name": "anchorfall-ai",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "discord.js": "^14.25.1",
+    "openai": "^5.0.0"
+  }
+}
