@@ -186,11 +186,22 @@ async function getTriage(messages, thread) {
     max_output_tokens: 400,
   });
 
-  const result = JSON.parse(response.output_text || "{}");
+  const outputText = response.output_text?.trim();
+  if (!outputText) throw new Error("The AI returned no structured response.");
+
+  const result = JSON.parse(outputText);
+  if (
+    typeof result.reply !== "string" ||
+    typeof result.handoff !== "boolean" ||
+    typeof result.summary !== "string"
+  ) {
+    throw new Error("The AI returned an invalid ticket response.");
+  }
+
   return {
-    reply: typeof result.reply === "string" ? result.reply : "",
-    handoff: result.handoff === true,
-    summary: typeof result.summary === "string" ? result.summary : "",
+    reply: result.reply,
+    handoff: result.handoff,
+    summary: result.summary,
   };
 }
 
