@@ -343,14 +343,12 @@ async function logModerationAction(
 ) {
   const titles = {
     clear: "Safe message",
-    exempt: "Staff exempt message",
     uncertain: "1-hour timeout",
     violation: "3-hour timeout",
     unavailable: "AI check unavailable",
   };
   const colors = {
     clear: 0x2ecc71,
-    exempt: 0x2ecc71,
     uncertain: 0xf39c12,
     violation: 0xe74c3c,
     unavailable: 0x95a5a6,
@@ -358,8 +356,6 @@ async function logModerationAction(
   let action;
   if (assessment.decision === "clear") {
     action = "Safe — no timeout applied";
-  } else if (assessment.decision === "exempt") {
-    action = "Staff message — no timeout applied";
   } else if (assessment.decision === "unavailable") {
     action = "AI check unavailable — no timeout applied";
   } else if (timeoutError) {
@@ -465,15 +461,6 @@ client.on(Events.MessageCreate, async (message) => {
         decision: "unavailable",
         category: "none",
         reason: "The guild member could not be fetched; no timeout was applied.",
-      });
-      return;
-    }
-
-    if (member.roles.cache.has(STAFF_ROLE_ID)) {
-      await logModerationAction(message, {
-        decision: "exempt",
-        category: "none",
-        reason: "Staff messages are exempt from automated timeouts.",
       });
       return;
     }
