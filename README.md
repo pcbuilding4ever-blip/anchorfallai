@@ -28,6 +28,7 @@ When enabled, the AI bot checks new messages in server text channels using the O
 - A clear violation receives a **3-hour timeout**.
 - A message with a concrete but ambiguous signal receives a **1-hour timeout**.
 - If OpenAI is unavailable or returns an invalid result, the bot applies no timeout.
+- Every eligible message is logged with its text, AI reason, and source link: green for safe, orange for a 1-hour timeout, and red for a 3-hour timeout. Staff messages are logged as exempt; bots, private ticket threads, configured exempt channels, and the log channel itself are skipped. Messages without readable text or failed AI checks are logged gray and receive no timeout.
 - The bot sends the timed-out member a notice. Configure a private moderation log channel so staff can review the category, reason, and message link. Without that channel, actions are written only to the server process log.
 - The bot needs **Moderate Members** permission, and its role must be above the members it may timeout.
 - Eligible non-ticket messages are sent to the OpenAI API for classification. Tell server members that AI processes these messages.
@@ -35,7 +36,7 @@ When enabled, the AI bot checks new messages in server text channels using the O
 Optional Wispbyte variables:
 
 - `MESSAGE_MODERATION_ENABLED=false` disables message moderation; it is enabled by default.
-- `MODERATION_LOG_CHANNEL_ID` sets the private staff log channel.
+- `MODERATION_LOG_CHANNEL_ID` sets the staff log channel; it defaults to `1563113650552569896`.
 - `MODERATION_EXEMPT_CHANNEL_IDS` is a comma-separated list of channel, category, or forum IDs to skip.
 
 ## Connect it to the existing ticket bot
