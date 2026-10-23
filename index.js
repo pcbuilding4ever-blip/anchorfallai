@@ -20,7 +20,7 @@ const HANDOFFS_FILE = path.join(process.cwd(), "handoffs.json");
 const MESSAGE_MODERATION_ENABLED =
   process.env.MESSAGE_MODERATION_ENABLED?.trim().toLowerCase() !== "false";
 const MODERATION_LOG_CHANNEL_ID =
-  process.env.MODERATION_LOG_CHANNEL_ID || "";
+  process.env.MODERATION_LOG_CHANNEL_ID || "1563113650552569896";
 const MODERATION_EXEMPT_CHANNEL_IDS = new Set(
   (process.env.MODERATION_EXEMPT_CHANNEL_IDS || "")
     .split(",")
@@ -334,17 +334,38 @@ function moderationCategoryLabel(category) {
   }[category] || "Other";
 }
 
-async function logModerationAction(message, assessment, durationLabel, timeoutError) {
-  const action = timeoutError
-    ? "Timeout could not be applied"
-    : "Timeout applied: " + durationLabel;
-
-  if (!MODERATION_LOG_CHANNEL_ID) {
-    console.info(
-      "[AI moderation] " + action + " for user " + message.author.id +
-      " (" + assessment.category + "). Set MODERATION_LOG_CHANNEL_ID for staff logs."
-    );
-    return;
+async function logModerationAction(
+  message,
+  assessment,
+  durationLabel = "",
+  timeoutError = null,
+  checkError = null
+) {
+  const titles = {
+    clear: "Safe message",
+    exempt: "Staff exempt message",
+    uncertain: "1-hour timeout",
+    violation: "3-hour timeout",
+    unavailable: "AI check unavailable",
+  };
+  const colors = {
+    clear: 0x2ecc71,
+    exempt: 0x2ecc71,
+    uncertain: 0xf39c12,
+    violation: 0xe74c3c,
+    unavailable: 0x95a5a6,
+  };
+  let action;
+  if (assessment.decision === "clear") {
+    action = "Safe — no timeout applied";
+  } else if (assessment.decision === "exempt") {
+    action = "Staff message — no timeout applied";
+  } else if (assessment.decision === "unavailable") {
+    action = "AI check unavailable — no timeout applied";
+  } else if (timeoutError) {
+    action = "Timeout could not be applied";
+  } else {
+    action = "Timeout applied: " + durationLabel;
   }
 
   try {
@@ -353,23 +374,34 @@ async function logModerationAction(message, assessment, durationLabel, timeoutEr
       throw new Error("The configured moderation log channel is not a text channel.");
     }
 
+    const messageText = suppressMentions(message.content || "");
+    const shownText = messageText
+      ? messageText.slice(0, 1000) + (messageText.length > 1000 ? "… (truncated; open source message)" : "")
+      : "(No readable text; attachment content was not analyzed.)";
     const embed = new EmbedBuilder()
-      .setColor(timeoutError ? 0xe74c3c : 0xf39c12)
-      .setTitle("AI message moderation")
+      .setColor(colors[assessment.decision] || 0x95a5a6)
+      .setTitle(titles[assessment.decision] || "Message not classified")
       .setDescription(action)
       .addFields(
         { name: "Member", value: message.author.tag + " (" + message.author.id + ")" },
         { name: "Category", value: moderationCategoryLabel(assessment.category), inline: true },
         { name: "AI assessment", value: assessment.decision, inline: true },
         { name: "Reason", value: suppressMentions(assessment.reason).slice(0, 1000) },
-        { name: "Message", value: "[Open message](" + message.url + ")" }
+        { name: "Message", value: shownText },
+        { name: "Source", value: "[Open message](" + message.url + ")" }
       )
       .setTimestamp();
 
     if (timeoutError) {
       embed.addFields({
         name: "Timeout error",
-        value: String(timeoutError.message || timeoutError).slice(0, 500),
+        value: redactSecrets(String(timeoutError.message || timeoutError)).slice(0, 500),
+      });
+    }
+    if (checkError) {
+      embed.addFields({
+        name: "Check error",
+        value: redactSecrets(String(checkError.message || checkError)).slice(0, 500),
       });
     }
 
@@ -381,6 +413,7 @@ async function logModerationAction(message, assessment, durationLabel, timeoutEr
 
 function isModerationExempt(message) {
   const channel = message.channel;
+  if (message.channelId === MODERATION_LOG_CHANNEL_ID) return true;
   if (
     channel.isThread() &&
     channel.parentId === TICKET_PARENT_CHANNEL_ID &&
@@ -417,9 +450,9 @@ client.once(Events.ClientReady, (readyClient) => {
 const moderationMessagesInFlight = new Set();
 
 client.on(Events.MessageCreate, async (message) => {
-  if (!MESSAGE_MODERATION_ENABLED || !openai) return;
+  if (!MESSAGE_MODERATION_ENABLED) return;
   if (!message.guild || message.author.bot || message.webhookId) return;
-  if (!message.content.trim() || isModerationExempt(message)) return;
+  if (isModerationExempt(message)) return;
   if (moderationMessagesInFlight.has(message.id)) return;
 
   moderationMessagesInFlight.add(message.id);
@@ -427,7 +460,38 @@ client.on(Events.MessageCreate, async (message) => {
     const member =
       message.member ||
       (await message.guild.members.fetch(message.author.id).catch(() => null));
-    if (!member || member.roles.cache.has(STAFF_ROLE_ID)) return;
+    if (!member) return;
+
+    if (member.roles.cache.has(STAFF_ROLE_ID)) {
+      await logModerationAction(message, {
+        decision: "exempt",
+        category: "none",
+        reason: "Staff messages are exempt from automated timeouts.",
+      });
+      return;
+    }
+
+    const messageText = message.content.trim();
+    if (!messageText) {
+      await logModerationAction(message, {
+        decision: "unavailable",
+        category: "none",
+        reason: "No readable text was available; attachments were not analyzed.",
+      });
+      return;
+    }
+
+    if (!openai) {
+      await logModerationAction(
+        message,
+        {
+          decision: "unavailable",
+          category: "none",
+          reason: "OpenAI is not configured; no timeout was applied.",
+        }
+      );
+      return;
+    }
 
     let assessment;
     try {
@@ -437,10 +501,24 @@ client.on(Events.MessageCreate, async (message) => {
         "AI moderation check failed for message " + message.id + "; no timeout applied:",
         error.message
       );
+      await logModerationAction(
+        message,
+        {
+          decision: "unavailable",
+          category: "none",
+          reason: "AI check failed; no timeout was applied.",
+        },
+        "",
+        null,
+        error
+      );
       return;
     }
 
-    if (assessment.decision === "clear") return;
+    if (assessment.decision === "clear") {
+      await logModerationAction(message, assessment);
+      return;
+    }
 
     const durationMs =
       assessment.decision === "violation"
