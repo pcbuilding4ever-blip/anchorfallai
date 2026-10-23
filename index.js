@@ -220,22 +220,32 @@ async function getTriage(messages, thread) {
     };
   }
 
-  const response = await aiClient.responses.create({
+  const response = await aiClient.chat.completions.create({
     model: GROQ_MODEL,
-    instructions: TRIAGE_INSTRUCTIONS,
-    input: `Ticket: #${thread.name}\nMember's latest message: ${redactSecrets(messages.at(-1)?.content || "(attachment only)")}\n\nRecent conversation:\n${transcript}`,
-    text: {
-      format: {
-        type: "json_schema",
+    messages: [
+      { role: "system", content: TRIAGE_INSTRUCTIONS },
+      {
+        role: "user",
+        content:
+          "Ticket: #" + thread.name +
+          "\nMember's latest message: " +
+          redactSecrets(messages.at(-1)?.content || "(attachment only)") +
+          "\n\nRecent conversation:\n" + transcript,
+      },
+    ],
+    response_format: {
+      type: "json_schema",
+      json_schema: {
         name: "ticket_triage",
         strict: true,
         schema: outputSchema,
       },
     },
-    max_output_tokens: 400,
+    max_completion_tokens: 400,
+    reasoning_effort: "low",
   });
 
-  const outputText = response.output_text?.trim();
+  const outputText = response.choices?.[0]?.message?.content?.trim();
   if (!outputText) throw new Error("The AI returned no structured response.");
 
   const result = JSON.parse(outputText);
@@ -283,23 +293,30 @@ const MODERATION_INSTRUCTIONS = [
 async function classifyModerationMessage(content) {
   if (!aiClient) throw new Error("Groq is not configured.");
 
-  const response = await aiClient.responses.create({
+  const response = await aiClient.chat.completions.create({
     model: GROQ_MODEL,
-    instructions: MODERATION_INSTRUCTIONS,
-    input: "Classify this single Discord message:\n\n" +
-      redactSecrets(content).slice(0, 2000),
-    text: {
-      format: {
-        type: "json_schema",
+    messages: [
+      { role: "system", content: MODERATION_INSTRUCTIONS },
+      {
+        role: "user",
+        content:
+          "Classify this single Discord message:\n\n" +
+          redactSecrets(content).slice(0, 2000),
+      },
+    ],
+    response_format: {
+      type: "json_schema",
+      json_schema: {
         name: "message_moderation",
         strict: true,
         schema: moderationSchema,
       },
     },
-    max_output_tokens: 180,
+    max_completion_tokens: 300,
+    reasoning_effort: "low",
   });
 
-  const outputText = response.output_text?.trim();
+  const outputText = response.choices?.[0]?.message?.content?.trim();
   if (!outputText) throw new Error("The moderation model returned no response.");
 
   const result = JSON.parse(outputText);
@@ -486,7 +503,7 @@ client.on(Events.MessageCreate, async (message) => {
         {
           decision: "unavailable",
           category: "none",
-          reason: "OpenAI is not configured; no timeout was applied.",
+          reason: "Groq is not configured; no timeout was applied.",
         }
       );
       return;
