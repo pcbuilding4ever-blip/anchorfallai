@@ -7,8 +7,8 @@ This bot answers members inside standard private support-ticket threads, asks fo
 - The bot's token is stored as `BOT_TOKEN` in Wispbyte.
 - Add an OpenAI API key as `OPENAI_API_KEY` in Wispbyte. API usage is billed separately from ChatGPT.
 - In the Discord Developer Portal, enable **Message Content Intent** for this bot.
-- Invite the AI bot to the same Discord server with **View Channels**, **Read Message History**, **Send Messages**, and **Send Messages in Threads**.
-- Ticket conversations are sent to the OpenAI API to generate the AI replies and staff summaries. Let ticket users know an AI service processes their messages.
+- Invite the AI bot to the same Discord server with **View Channels**, **Read Message History**, **Send Messages**, and **Send Messages in Threads**. For message moderation, grant **Moderate Members** and place the bot's role above members it may timeout.
+- Ticket conversations are sent to the OpenAI API to generate AI replies and staff summaries. Eligible non-ticket server messages are also sent to classify possible scams, real-money trading, gambling promotion, and self-promotion. Let members know an AI service processes these messages.
 
 ## Wispbyte
 
@@ -16,9 +16,27 @@ Upload the repository files, then use **Startup** with:
 
 - Startup command: `npm start`
 - Required variables: `BOT_TOKEN`, `OPENAI_API_KEY`
-- Optional variables: `OPENAI_MODEL` (defaults to `gpt-6-astra`), `TICKET_PARENT_CHANNEL_ID`, `STAFF_ROLE_ID`
+- Optional variables: `OPENAI_MODEL` (defaults to `gpt-6-astra`), `TICKET_PARENT_CHANNEL_ID`, `STAFF_ROLE_ID`, `MESSAGE_MODERATION_ENABLED`, `MODERATION_LOG_CHANNEL_ID`, `MODERATION_EXEMPT_CHANNEL_IDS`
 
 The ticket channel and staff-role variables default to the IDs used by the existing AnchorFall bot.
+
+## AI message moderation
+
+When enabled, the AI bot checks new messages in server text channels using the OpenAI API. It skips bots, staff, configured exempt channels, and standard private ticket threads.
+
+- Clear messages receive no action.
+- A clear violation receives a **3-hour timeout**.
+- A message with a concrete but ambiguous signal receives a **1-hour timeout**.
+- If OpenAI is unavailable or returns an invalid result, the bot applies no timeout.
+- The bot sends the timed-out member a notice. Configure a private moderation log channel so staff can review the category, reason, and message link. Without that channel, actions are written only to the server process log.
+- The bot needs **Moderate Members** permission, and its role must be above the members it may timeout.
+- Eligible non-ticket messages are sent to the OpenAI API for classification. Tell server members that AI processes these messages.
+
+Optional Wispbyte variables:
+
+- `MESSAGE_MODERATION_ENABLED=false` disables message moderation; it is enabled by default.
+- `MODERATION_LOG_CHANNEL_ID` sets the private staff log channel.
+- `MODERATION_EXEMPT_CHANNEL_IDS` is a comma-separated list of channel, category, or forum IDs to skip.
 
 ## Connect it to the existing ticket bot
 
