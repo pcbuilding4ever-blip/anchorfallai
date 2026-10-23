@@ -4,11 +4,15 @@ import { randomInt } from "node:crypto";
 import { deflateSync } from "node:zlib";
 import OpenAI from "openai";
 import {
+  ActionRowBuilder,
+  ButtonBuilder,
+  ButtonStyle,
   ChannelType,
   Client,
   EmbedBuilder,
   Events,
   GatewayIntentBits,
+  PermissionsBitField,
 } from "discord.js";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
@@ -40,6 +44,7 @@ const VERIFIED_ROLE_ID =
   process.env.VERIFIED_ROLE_ID?.trim() || "1562149545604026468";
 const JOIN_ROLE_ID =
   process.env.JOIN_ROLE_ID?.trim() || "1550427313949122630";
+const VERIFICATION_BUTTON_ID = "anchorfall:verify:start";
 const VERIFICATION_ENABLED = Boolean(VERIFICATION_CHANNEL_ID && VERIFIED_ROLE_ID);
 const VERIFICATION_TTL_MS = 15 * 60 * 1000;
 const VERIFICATION_MAX_ATTEMPTS = 5;
@@ -293,6 +298,26 @@ async function sendVerificationCaptcha(thread, challenge, notice = "") {
   });
 }
 
+function createVerificationPanel() {
+  const embed = new EmbedBuilder()
+    .setColor(0x7c3aed)
+    .setTitle("Verify to access the server")
+    .setDescription(
+      "Click **Start verification** to open a private thread with your captcha. Type the six digits shown in the image there; your answer will be deleted after you send it."
+    );
+  const button = new ButtonBuilder()
+    .setCustomId(VERIFICATION_BUTTON_ID)
+    .setLabel("Start verification")
+    .setStyle(ButtonStyle.Primary);
+  const row = new ActionRowBuilder().addComponents(button);
+
+  return {
+    embeds: [embed],
+    components: [row],
+    allowedMentions: { parse: [] },
+  };
+}
+
 function findPendingVerification(guildId, userId) {
   return [...pendingVerifications.values()].find(
     (challenge) => challenge.guildId === guildId && challenge.userId === userId
@@ -303,7 +328,12 @@ async function createVerificationThread(member) {
   if (!VERIFICATION_ENABLED || member.roles.cache.has(VERIFIED_ROLE_ID)) return null;
 
   const existing = findPendingVerification(member.guild.id, member.id);
-  if (existing) return member.guild.channels.fetch(existing.threadId).catch(() => null);
+  if (existing) {
+    const existingThread = await member.guild.channels.fetch(existing.threadId).catch(() => null);
+    if (existingThread) return existingThread;
+    pendingVerifications.delete(existing.threadId);
+    persistPendingVerifications();
+  }
 
   const channel = await member.guild.channels.fetch(VERIFICATION_CHANNEL_ID);
   if (!channel?.threads || typeof channel.threads.create !== "function") {
@@ -380,6 +410,34 @@ async function resumePendingVerifications() {
 
 async function handleVerificationMessage(message) {
   if (!VERIFICATION_ENABLED || !message.guild || message.author.bot) return false;
+
+  if (
+    message.channelId === VERIFICATION_CHANNEL_ID &&
+    message.content.trim().toLowerCase() === "!postverify"
+  ) {
+    await message.delete().catch(() => {});
+    const member =
+      message.member ||
+      (await message.guild.members.fetch(message.author.id).catch(() => null));
+    if (!member?.permissions.has(PermissionsBitField.Flags.ManageGuild)) {
+      await message.channel.send({
+        content: "Only members with Manage Server can post the verification panel.",
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+
+    try {
+      await message.channel.send(createVerificationPanel());
+    } catch (error) {
+      console.error("Could not post the verification panel:", error.message);
+      await message.channel.send({
+        content: "I couldn't post the verification panel. Please check my channel permissions.",
+        allowedMentions: { parse: [] },
+      });
+    }
+    return true;
+  }
 
   if (
     message.channelId === VERIFICATION_CHANNEL_ID &&
@@ -954,6 +1012,54 @@ client.on(Events.GuildMemberAdd, async (member) => {
     await createVerificationThread(member);
   } catch (error) {
     console.error(`Could not start verification for new member ${member.id}:`, error.message);
+  }
+});
+
+client.on(Events.InteractionCreate, async (interaction) => {
+  if (!interaction.isButton() || interaction.customId !== VERIFICATION_BUTTON_ID) return;
+
+  await interaction.deferReply({ ephemeral: true });
+  if (
+    !VERIFICATION_ENABLED ||
+    !interaction.guild ||
+    interaction.channelId !== VERIFICATION_CHANNEL_ID
+  ) {
+    await interaction.editReply({
+      content: "Verification isn't configured for this channel.",
+      allowedMentions: { parse: [] },
+    });
+    return;
+  }
+
+  try {
+    const member = await interaction.guild.members.fetch(interaction.user.id);
+    if (member.roles.cache.has(VERIFIED_ROLE_ID)) {
+      await interaction.editReply({
+        content: "You're already verified!",
+        allowedMentions: { parse: [] },
+      });
+      return;
+    }
+
+    const thread = await createVerificationThread(member);
+    if (!thread) {
+      await interaction.editReply({
+        content: "You're already verified!",
+        allowedMentions: { parse: [] },
+      });
+      return;
+    }
+
+    await interaction.editReply({
+      content: `Your private captcha is here: <#${thread.id}>`,
+      allowedMentions: { parse: [] },
+    });
+  } catch (error) {
+    console.error(`Could not start verification from the panel for ${interaction.user.id}:`, error.message);
+    await interaction.editReply({
+      content: "I couldn't start verification. Please ask staff to check my verification permissions.",
+      allowedMentions: { parse: [] },
+    });
   }
 });
 
