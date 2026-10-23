@@ -22,13 +22,13 @@ The ticket channel and staff-role variables default to the IDs used by the exist
 
 ## AI message moderation
 
-When enabled, the AI bot checks new messages in server text channels using Groq. It skips bots, configured exempt channels, and standard private ticket threads. Staff messages are checked like other member messages.
+When enabled, a local keyword filter first checks new messages in server text channels. Messages without matching terms are logged as passing the filter and are not sent to Groq; likely matches are sent to Groq so it can judge context. The filter includes terms such as Nitro, giveaway, bio, DM, scam, credential requests, real-money trading, gambling, and common self-promotion phrases. It skips bots, configured exempt channels, and standard private ticket threads. Staff messages are checked like other member messages.
 
 - Clear messages receive no action.
 - A clear violation receives a **3-hour timeout**.
 - A message with a concrete but ambiguous signal receives a **1-hour timeout**.
 - If Groq is unavailable or returns an invalid result, the bot applies no timeout.
-- Every eligible message, including staff messages, is logged with its text, AI reason, and source link: green for safe, orange for a 1-hour timeout, and red for a 3-hour timeout. Bots, private ticket threads, configured exempt channels, and the log channel itself are skipped. Messages without readable text or failed AI checks are logged gray and receive no timeout.
+- Every eligible message, including staff messages, is logged with its text and source link. Messages that pass the local keyword filter are logged green as not sent to AI; AI-reviewed safe messages are green, uncertain matches are orange for a 1-hour timeout, and clear violations are red for a 3-hour timeout. Bots, private ticket threads, configured exempt channels, and the log channel itself are skipped. Messages without readable text or failed AI checks are logged gray and receive no timeout.
 - The bot sends the timed-out member a notice. Configure a private moderation log channel so staff can review the category, reason, and message link. Without that channel, actions are written only to the server process log.
 - The bot needs **Moderate Members** permission, and its role must be above the members it may timeout.
 - Eligible non-ticket messages are sent to Groq for classification. Tell server members that AI processes these messages.
