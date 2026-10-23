@@ -38,6 +38,8 @@ const VERIFICATION_CHANNEL_ID =
   process.env.VERIFICATION_CHANNEL_ID?.trim() || "1563125387238838422";
 const VERIFIED_ROLE_ID =
   process.env.VERIFIED_ROLE_ID?.trim() || "1562149545604026468";
+const JOIN_ROLE_ID =
+  process.env.JOIN_ROLE_ID?.trim() || "1550427313949122630";
 const VERIFICATION_ENABLED = Boolean(VERIFICATION_CHANNEL_ID && VERIFIED_ROLE_ID);
 const VERIFICATION_TTL_MS = 15 * 60 * 1000;
 const VERIFICATION_MAX_ATTEMPTS = 5;
@@ -938,7 +940,16 @@ client.once(Events.ClientReady, async (readyClient) => {
 const moderationMessagesInFlight = new Set();
 
 client.on(Events.GuildMemberAdd, async (member) => {
-  if (!VERIFICATION_ENABLED || member.user.bot) return;
+  if (member.user.bot) return;
+  try {
+    if (!member.roles.cache.has(JOIN_ROLE_ID)) {
+      await member.roles.add(JOIN_ROLE_ID, "Automatic role on joining");
+    }
+  } catch (error) {
+    console.error(`Could not add automatic join role to ${member.id}:`, error.message);
+  }
+
+  if (!VERIFICATION_ENABLED) return;
   try {
     await createVerificationThread(member);
   } catch (error) {
