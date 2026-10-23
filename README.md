@@ -16,13 +16,15 @@ Upload the repository files, then use **Startup** with:
 
 - Startup command: `npm start`
 - Required variables: `BOT_TOKEN`, `GROQ_API_KEY`
-- Optional variables: `GROQ_MODEL` (defaults to `openai/gpt-oss-20b`), `TICKET_PARENT_CHANNEL_ID`, `STAFF_ROLE_ID`, `MESSAGE_MODERATION_ENABLED`, `MODERATION_LOG_CHANNEL_ID`, `MODERATION_EXEMPT_CHANNEL_IDS`, `VERIFICATION_CHANNEL_ID`, `VERIFIED_ROLE_ID`
+- Optional variables: `GROQ_MODEL` (defaults to `openai/gpt-oss-20b`), `TICKET_PARENT_CHANNEL_ID`, `STAFF_ROLE_ID`, `MESSAGE_MODERATION_ENABLED`, `MODERATION_LOG_CHANNEL_ID`, `MODERATION_EXEMPT_CHANNEL_IDS`, `VERIFICATION_CHANNEL_ID`, `VERIFIED_ROLE_ID`, `JOIN_ROLE_ID`
 
 The ticket channel and staff-role variables default to the IDs used by the existing AnchorFall bot.
 
 ## Image captcha verification
 
 The verification channel and role default to `1563125387238838422` and `1562149545604026468`. You can override them with `VERIFICATION_CHANNEL_ID` and `VERIFIED_ROLE_ID` in Wispbyte. In Discord's Developer Portal, enable **Server Members Intent**.
+
+On joining, non-bot members are also given the join role `1550427313949122630`. Override it with `JOIN_ROLE_ID` if needed. This join role is separate from the verified role; make sure its channel permissions do not bypass any access restrictions you want the captcha to enforce.
 
 When someone joins, the bot creates a private thread in the verification channel, invites them, and sends a randomly generated captcha image. They type the six digits in that thread; the bot deletes their answer and grants the verified role only when it matches. Captchas expire after 15 minutes, and five incorrect answers create a fresh captcha. Existing unverified members can type `!verify` in the verification channel. If the bot restarts during a pending captcha, it sends a fresh image to the existing thread.
 
