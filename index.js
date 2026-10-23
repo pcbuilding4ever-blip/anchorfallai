@@ -9,8 +9,8 @@ import {
 } from "discord.js";
 
 const BOT_TOKEN = process.env.BOT_TOKEN;
-const OPENAI_API_KEY = process.env.OPENAI_API_KEY;
-const OPENAI_MODEL = process.env.OPENAI_MODEL || "gpt-6-astra";
+const GROQ_API_KEY = process.env.GROQ_API_KEY;
+const GROQ_MODEL = process.env.GROQ_MODEL || "openai/gpt-oss-20b";
 const TICKET_PARENT_CHANNEL_ID =
   process.env.TICKET_PARENT_CHANNEL_ID || "1553777212170178570";
 const STAFF_ROLE_ID = process.env.STAFF_ROLE_ID || "1553780133867814982";
@@ -37,8 +37,13 @@ if (!BOT_TOKEN) {
   process.exit(1);
 }
 
-const openai = OPENAI_API_KEY
-  ? new OpenAI({ apiKey: OPENAI_API_KEY, timeout: 30_000, maxRetries: 1 })
+const aiClient = GROQ_API_KEY
+  ? new OpenAI({
+      apiKey: GROQ_API_KEY,
+      baseURL: "https://api.groq.com/openai/v1",
+      timeout: 30_000,
+      maxRetries: 1,
+    })
   : null;
 
 const client = new Client({
@@ -205,7 +210,7 @@ handoff=true.
 
 async function getTriage(messages, thread) {
   const transcript = summarizeHistory(messages);
-  if (!openai) {
+  if (!aiClient) {
     return {
       reply: "I can’t access the AI service right now, so I’m passing this ticket to staff.",
       handoff: true,
@@ -215,8 +220,8 @@ async function getTriage(messages, thread) {
     };
   }
 
-  const response = await openai.responses.create({
-    model: OPENAI_MODEL,
+  const response = await aiClient.responses.create({
+    model: GROQ_MODEL,
     instructions: TRIAGE_INSTRUCTIONS,
     input: `Ticket: #${thread.name}\nMember's latest message: ${redactSecrets(messages.at(-1)?.content || "(attachment only)")}\n\nRecent conversation:\n${transcript}`,
     text: {
@@ -276,10 +281,10 @@ const MODERATION_INSTRUCTIONS = [
 ].join("\n");
 
 async function classifyModerationMessage(content) {
-  if (!openai) throw new Error("OpenAI is not configured.");
+  if (!aiClient) throw new Error("Groq is not configured.");
 
-  const response = await openai.responses.create({
-    model: OPENAI_MODEL,
+  const response = await aiClient.responses.create({
+    model: GROQ_MODEL,
     instructions: MODERATION_INSTRUCTIONS,
     input: "Classify this single Discord message:\n\n" +
       redactSecrets(content).slice(0, 2000),
@@ -430,13 +435,13 @@ function explicitlyRequestsStaff(text) {
 
 client.once(Events.ClientReady, (readyClient) => {
   console.log(`AnchorFall AI is online as ${readyClient.user.tag}`);
-  if (!openai) {
-    console.warn("OPENAI_API_KEY is not set; tickets will be handed to staff without AI replies.");
+  if (!aiClient) {
+    console.warn("GROQ_API_KEY is not set; tickets will be handed to staff without AI replies.");
   }
   if (!MESSAGE_MODERATION_ENABLED) {
     console.log("AI message moderation is disabled by MESSAGE_MODERATION_ENABLED=false.");
-  } else if (!openai) {
-    console.warn("AI message moderation is unavailable until OPENAI_API_KEY is configured.");
+  } else if (!aiClient) {
+    console.warn("AI message moderation is unavailable until GROQ_API_KEY is configured.");
   } else if (!MODERATION_LOG_CHANNEL_ID) {
     console.warn("MODERATION_LOG_CHANNEL_ID is not set; moderation actions will only appear in the process log.");
   }
@@ -475,7 +480,7 @@ client.on(Events.MessageCreate, async (message) => {
       return;
     }
 
-    if (!openai) {
+    if (!aiClient) {
       await logModerationAction(
         message,
         {
