@@ -22,7 +22,7 @@ The ticket channel and staff-role variables default to the IDs used by the exist
 
 ## AI message moderation
 
-When enabled, a local keyword filter first checks new messages in server text channels. Messages without matching terms are logged as passing the filter and are not sent to Groq; likely matches are sent to Groq so it can judge context. The filter includes terms such as Nitro, giveaway, bio, DM, scam, credential requests, real-money trading, gambling, and common self-promotion phrases. It skips bots, configured exempt channels, and standard private ticket threads. Staff messages are checked like other member messages.
+When enabled, a local keyword filter first checks new messages in server text channels. Messages without matching terms are logged as passing the filter and are not sent to Groq; likely matches are sent to Groq so it can judge context. The filter includes terms such as Nitro, giveaways, bio, DM, scam/phishing, prizes, rewards, account verification, passwords and codes, gift cards, game currency, payment and crypto terms, gambling, trading, and common self-promotion phrases. It skips bots, configured exempt channels, and standard private ticket threads. Staff messages are checked like other member messages.
 
 - Clear messages receive no action.
 - A clear violation receives a **3-hour timeout**.
