@@ -239,7 +239,7 @@ const MODERATION_INSTRUCTIONS = [
   "Do not flag warnings about scams, victims asking for help, neutral discussion, criticism, news, or explanations of the rules. Do not treat a link alone as a violation. Apply self-promotion only when the message actually advertises or solicits; ordinary mentions and relevant helpful links are clear.",
   "Be conservative: use uncertain only when there is a concrete signal of a concern but the meaning or intent is genuinely ambiguous. Use violation only for explicit, clear promotion or solicitation. Use clear when there is no concrete signal. For clear, category must be none; otherwise choose the matching category.",
   "Return a short factual reason without quoting links or secrets. Return only the requested JSON object.",
-].join("\\n");
+].join("\n");
 
 async function classifyModerationMessage(content) {
   if (!openai) throw new Error("OpenAI is not configured.");
@@ -247,7 +247,7 @@ async function classifyModerationMessage(content) {
   const response = await openai.responses.create({
     model: OPENAI_MODEL,
     instructions: MODERATION_INSTRUCTIONS,
-    input: "Classify this single Discord message:\\n\\n" +
+    input: "Classify this single Discord message:\n\n" +
       redactSecrets(content).slice(0, 2000),
     text: {
       format: {
