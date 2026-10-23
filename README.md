@@ -28,6 +28,8 @@ On joining, non-bot members are also given the join role `1550427313949122630`. 
 
 When someone joins, the bot creates a private thread in the verification channel, invites them, and sends a randomly generated captcha image. They type the six digits in that thread; the bot deletes their answer and grants the verified role only when it matches. Captchas expire after 15 minutes, and five incorrect answers create a fresh captcha. Existing unverified members can type `!verify` in the verification channel. If the bot restarts during a pending captcha, it sends a fresh image to the existing thread.
 
+A member with **Manage Server** can run `!postverify` in the verification channel to post a reusable verification panel. Members click its **Start verification** button to get their own private captcha thread. The older `!verify` command remains available.
+
 Give the bot **Manage Roles** (with its role above the verified role), **Manage Messages**, **Create Private Threads**, **Manage Threads**, **Send Messages in Threads**, and **Attach Files** in the verification channel. Members must be able to view the verification channel and send `!verify`; private threads let each person see only their own captcha. Set the server's channel permissions so unverified members can access only the verification area until they receive the verified role. Verification messages and captcha answers are excluded from scam moderation.
 
 ## AI message moderation
