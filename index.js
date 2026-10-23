@@ -1,7 +1,10 @@
 import fs from "node:fs";
 import path from "node:path";
+import { randomInt } from "node:crypto";
+import { deflateSync } from "node:zlib";
 import OpenAI from "openai";
 import {
+  ChannelType,
   Client,
   EmbedBuilder,
   Events,
@@ -31,6 +34,14 @@ const MODERATION_TIMEOUTS = {
   violation: 3 * 60 * 60 * 1000,
   uncertain: 60 * 60 * 1000,
 };
+const VERIFICATION_CHANNEL_ID =
+  process.env.VERIFICATION_CHANNEL_ID?.trim() || "1563125387238838422";
+const VERIFIED_ROLE_ID =
+  process.env.VERIFIED_ROLE_ID?.trim() || "1562149545604026468";
+const VERIFICATION_ENABLED = Boolean(VERIFICATION_CHANNEL_ID && VERIFIED_ROLE_ID);
+const VERIFICATION_TTL_MS = 15 * 60 * 1000;
+const VERIFICATION_MAX_ATTEMPTS = 5;
+const PENDING_VERIFICATIONS_FILE = path.join(process.cwd(), "pending-verifications.json");
 const MODERATION_REVIEW_PATTERNS = [
   /\bnitro\b/i,
   /\bgiveaways?\b/i,
@@ -73,10 +84,424 @@ const aiClient = GROQ_API_KEY
 const client = new Client({
   intents: [
     GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMembers,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
   ],
 });
+
+const pendingVerifications = new Map();
+try {
+  const records = JSON.parse(fs.readFileSync(PENDING_VERIFICATIONS_FILE, "utf8"));
+  if (Array.isArray(records)) {
+    for (const record of records) {
+      if (
+        typeof record?.guildId === "string" &&
+        typeof record?.threadId === "string" &&
+        typeof record?.userId === "string"
+      ) {
+        pendingVerifications.set(record.threadId, {
+          guildId: record.guildId,
+          threadId: record.threadId,
+          userId: record.userId,
+          attempts: Number.isInteger(record.attempts) ? record.attempts : 0,
+        });
+      }
+    }
+  }
+} catch {
+  // The file is created when the first member starts verification.
+}
+
+function persistPendingVerifications() {
+  const tempFile = `${PENDING_VERIFICATIONS_FILE}.${process.pid}.tmp`;
+  const records = [...pendingVerifications.values()].map((challenge) => ({
+    guildId: challenge.guildId,
+    threadId: challenge.threadId,
+    userId: challenge.userId,
+    attempts: challenge.attempts,
+  }));
+  fs.writeFileSync(tempFile, JSON.stringify(records, null, 2), "utf8");
+  fs.renameSync(tempFile, PENDING_VERIFICATIONS_FILE);
+}
+
+const CAPTCHA_DIGITS = {
+  "2": ["01110", "10001", "00001", "00010", "00100", "01000", "11111"],
+  "3": ["11110", "00001", "00001", "01110", "00001", "00001", "11110"],
+  "4": ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
+  "5": ["11111", "10000", "10000", "11110", "00001", "00001", "11110"],
+  "6": ["01110", "10000", "10000", "11110", "10001", "10001", "01110"],
+  "7": ["11111", "00001", "00010", "00100", "01000", "01000", "01000"],
+  "8": ["01110", "10001", "10001", "01110", "10001", "10001", "01110"],
+  "9": ["01110", "10001", "10001", "01111", "00001", "00010", "11100"],
+};
+
+const PNG_CRC_TABLE = new Uint32Array(256);
+for (let index = 0; index < 256; index += 1) {
+  let value = index;
+  for (let bit = 0; bit < 8; bit += 1) {
+    value = value & 1 ? 0xedb88320 ^ (value >>> 1) : value >>> 1;
+  }
+  PNG_CRC_TABLE[index] = value >>> 0;
+}
+
+function pngCrc32(buffer) {
+  let crc = 0xffffffff;
+  for (const byte of buffer) crc = PNG_CRC_TABLE[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data = Buffer.alloc(0)) {
+  const typeBuffer = Buffer.from(type, "ascii");
+  const length = Buffer.alloc(4);
+  length.writeUInt32BE(data.length);
+  const checksum = Buffer.alloc(4);
+  checksum.writeUInt32BE(pngCrc32(Buffer.concat([typeBuffer, data])));
+  return Buffer.concat([length, typeBuffer, data, checksum]);
+}
+
+function createCaptchaPng(answer) {
+  const width = 320;
+  const height = 112;
+  const scale = 7;
+  const pixels = Buffer.alloc(width * height * 4);
+
+  for (let y = 0; y < height; y += 1) {
+    for (let x = 0; x < width; x += 1) {
+      const offset = (y * width + x) * 4;
+      const shade = Math.floor((x / width) * 8 + (y / height) * 8);
+      pixels[offset] = 239 - shade;
+      pixels[offset + 1] = 243 - shade;
+      pixels[offset + 2] = 252;
+      pixels[offset + 3] = 255;
+    }
+  }
+
+  function setPixel(x, y, color) {
+    if (x < 0 || x >= width || y < 0 || y >= height) return;
+    const offset = (Math.floor(y) * width + Math.floor(x)) * 4;
+    const alpha = color[3] / 255;
+    pixels[offset] = Math.round(color[0] * alpha + pixels[offset] * (1 - alpha));
+    pixels[offset + 1] = Math.round(color[1] * alpha + pixels[offset + 1] * (1 - alpha));
+    pixels[offset + 2] = Math.round(color[2] * alpha + pixels[offset + 2] * (1 - alpha));
+    pixels[offset + 3] = 255;
+  }
+
+  function drawLine(x1, y1, x2, y2, color, thickness = 1) {
+    let x = x1;
+    let y = y1;
+    const dx = Math.abs(x2 - x1);
+    const sx = x1 < x2 ? 1 : -1;
+    const dy = -Math.abs(y2 - y1);
+    const sy = y1 < y2 ? 1 : -1;
+    let error = dx + dy;
+
+    while (true) {
+      for (let oy = -thickness; oy <= thickness; oy += 1) {
+        for (let ox = -thickness; ox <= thickness; ox += 1) {
+          if (ox * ox + oy * oy <= thickness * thickness + 1) {
+            setPixel(x + ox, y + oy, color);
+          }
+        }
+      }
+      if (x === x2 && y === y2) break;
+      const twiceError = 2 * error;
+      if (twiceError >= dy) {
+        error += dy;
+        x += sx;
+      }
+      if (twiceError <= dx) {
+        error += dx;
+        y += sy;
+      }
+    }
+  }
+
+  for (let index = 0; index < 34; index += 1) {
+    const x = randomInt(width);
+    const y = randomInt(height);
+    const color = index % 2
+      ? [98, 122, 168, 85]
+      : [132, 109, 177, 75];
+    setPixel(x, y, color);
+  }
+
+  for (let index = 0; index < 7; index += 1) {
+    drawLine(
+      randomInt(width),
+      randomInt(height),
+      randomInt(width),
+      randomInt(height),
+      [104, 126, 170, 95],
+      index % 3 === 0 ? 1 : 0
+    );
+  }
+
+  const glyphWidth = 5 * scale;
+  const gap = 9;
+  let cursorX = Math.floor((width - (answer.length * glyphWidth + (answer.length - 1) * gap)) / 2);
+  for (const digit of answer) {
+    const glyph = CAPTCHA_DIGITS[digit];
+    const top = Math.floor((height - 7 * scale) / 2) + randomInt(-3, 4);
+    const color = [randomInt(28, 61), randomInt(35, 67), randomInt(82, 125), 255];
+    for (let row = 0; row < glyph.length; row += 1) {
+      for (let column = 0; column < glyph[row].length; column += 1) {
+        if (glyph[row][column] !== "1") continue;
+        for (let dy = 0; dy < scale; dy += 1) {
+          for (let dx = 0; dx < scale; dx += 1) {
+            setPixel(cursorX + column * scale + dx, top + row * scale + dy, color);
+          }
+        }
+      }
+    }
+    cursorX += glyphWidth + gap;
+  }
+
+  const rowBytes = width * 4 + 1;
+  const raw = Buffer.alloc(height * rowBytes);
+  for (let y = 0; y < height; y += 1) {
+    const rowOffset = y * rowBytes;
+    raw[rowOffset] = 0;
+    pixels.copy(raw, rowOffset + 1, y * width * 4, (y + 1) * width * 4);
+  }
+
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = 6;
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    pngChunk("IHDR", header),
+    pngChunk("IDAT", deflateSync(raw)),
+    pngChunk("IEND"),
+  ]);
+}
+
+function createCaptchaAnswer() {
+  return Array.from({ length: 6 }, () => String(randomInt(2, 10))).join("");
+}
+
+async function sendVerificationCaptcha(thread, challenge, notice = "") {
+  const prefix = notice ? `${notice}\n\n` : "";
+  await thread.send({
+    content: `${prefix}Type the six digits shown in this picture. Your captcha expires in 15 minutes. Your answer will be deleted.`,
+    files: [{ attachment: createCaptchaPng(challenge.answer), name: "verification-captcha.png" }],
+    allowedMentions: { parse: [] },
+  });
+}
+
+function findPendingVerification(guildId, userId) {
+  return [...pendingVerifications.values()].find(
+    (challenge) => challenge.guildId === guildId && challenge.userId === userId
+  );
+}
+
+async function createVerificationThread(member) {
+  if (!VERIFICATION_ENABLED || member.roles.cache.has(VERIFIED_ROLE_ID)) return null;
+
+  const existing = findPendingVerification(member.guild.id, member.id);
+  if (existing) return member.guild.channels.fetch(existing.threadId).catch(() => null);
+
+  const channel = await member.guild.channels.fetch(VERIFICATION_CHANNEL_ID);
+  if (!channel?.threads || typeof channel.threads.create !== "function") {
+    throw new Error("VERIFICATION_CHANNEL_ID must be a text channel that supports private threads.");
+  }
+
+  const thread = await channel.threads.create({
+    name: `verify-${member.id.slice(-8)}`,
+    type: ChannelType.PrivateThread,
+    autoArchiveDuration: 1440,
+    invitable: false,
+    reason: "Private captcha verification for a new or unverified member",
+  });
+
+  try {
+    await thread.members.add(member.id);
+  } catch (error) {
+    await thread.setArchived(true).catch(() => {});
+    throw error;
+  }
+
+  const challenge = {
+    guildId: member.guild.id,
+    threadId: thread.id,
+    userId: member.id,
+    answer: createCaptchaAnswer(),
+    attempts: 0,
+    expiresAt: Date.now() + VERIFICATION_TTL_MS,
+  };
+  pendingVerifications.set(thread.id, challenge);
+  persistPendingVerifications();
+  await sendVerificationCaptcha(thread, challenge);
+  return thread;
+}
+
+async function resumePendingVerifications() {
+  if (!VERIFICATION_ENABLED) return;
+
+  for (const saved of [...pendingVerifications.values()]) {
+    try {
+      const guild = await client.guilds.fetch(saved.guildId).catch(() => null);
+      const member = guild
+        ? await guild.members.fetch(saved.userId).catch(() => null)
+        : null;
+      const thread = guild
+        ? await guild.channels.fetch(saved.threadId).catch(() => null)
+        : null;
+
+      if (!member || member.roles.cache.has(VERIFIED_ROLE_ID) || !thread?.isThread()) {
+        pendingVerifications.delete(saved.threadId);
+        persistPendingVerifications();
+        continue;
+      }
+
+      if (thread.archived) await thread.setArchived(false);
+
+      const challenge = {
+        ...saved,
+        answer: createCaptchaAnswer(),
+        attempts: 0,
+        expiresAt: Date.now() + VERIFICATION_TTL_MS,
+      };
+      pendingVerifications.set(saved.threadId, challenge);
+      await sendVerificationCaptcha(
+        thread,
+        challenge,
+        "The bot restarted, so I made you a fresh captcha."
+      );
+    } catch (error) {
+      console.error(`Could not resume verification thread ${saved.threadId}:`, error.message);
+    }
+  }
+}
+
+async function handleVerificationMessage(message) {
+  if (!VERIFICATION_ENABLED || !message.guild || message.author.bot) return false;
+
+  if (
+    message.channelId === VERIFICATION_CHANNEL_ID &&
+    message.content.trim().toLowerCase() === "!verify"
+  ) {
+    await message.delete().catch(() => {});
+    const member =
+      message.member ||
+      (await message.guild.members.fetch(message.author.id).catch(() => null));
+
+    if (!member) {
+      await message.channel.send({
+        content: "I couldn't find your server account. Please ask staff for help.",
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+
+    if (member.roles.cache.has(VERIFIED_ROLE_ID)) {
+      await message.channel.send({
+        content: "You're already verified!",
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+
+    const existing = findPendingVerification(message.guild.id, member.id);
+    if (existing) {
+      await message.channel.send({
+        content: `You already have a verification thread: <#${existing.threadId}>. Continue there.`,
+        allowedMentions: { parse: [] },
+      });
+      return true;
+    }
+
+    try {
+      await createVerificationThread(member);
+    } catch (error) {
+      console.error(`Could not start verification for ${member.id}:`, error.message);
+      await message.channel.send({
+        content: "I couldn't start verification. Please ask staff to check my verification permissions.",
+        allowedMentions: { parse: [] },
+      });
+    }
+    return true;
+  }
+
+  const challenge = pendingVerifications.get(message.channelId);
+  if (!challenge || !message.channel.isThread() || challenge.userId !== message.author.id) {
+    return false;
+  }
+
+  const submitted = message.content.trim();
+  const deleted = await message.delete().then(() => true, () => false);
+  if (!deleted) {
+    await message.channel.send({
+      content: "I couldn't delete that answer. Please ask staff to check my Manage Messages permission, then try again.",
+      allowedMentions: { parse: [] },
+    });
+    return true;
+  }
+
+  if (!challenge.answer) {
+    await message.channel.send({
+      content: "I'm restoring your captcha. Please wait a moment and try the new image.",
+      allowedMentions: { parse: [] },
+    });
+    return true;
+  }
+
+  if (Date.now() >= challenge.expiresAt) {
+    challenge.answer = createCaptchaAnswer();
+    challenge.attempts = 0;
+    challenge.expiresAt = Date.now() + VERIFICATION_TTL_MS;
+    persistPendingVerifications();
+    await sendVerificationCaptcha(message.channel, challenge, "That captcha expired, so here's a fresh one.");
+    return true;
+  }
+
+  if (submitted === challenge.answer) {
+    try {
+      const member = await message.guild.members.fetch(challenge.userId);
+      const role = await message.guild.roles.fetch(VERIFIED_ROLE_ID);
+      if (!role) throw new Error("The configured verified role was not found.");
+      await member.roles.add(role, "Passed the image captcha verification");
+      pendingVerifications.delete(message.channelId);
+      persistPendingVerifications();
+      await message.channel.send({
+        content: "✅ Correct! You've been verified and can access the server now.",
+        allowedMentions: { parse: [] },
+      });
+      await message.channel.setArchived(true).catch((error) => {
+        console.error(`Could not archive verification thread ${message.channelId}:`, error.message);
+      });
+    } catch (error) {
+      console.error(`Could not grant the verified role to ${challenge.userId}:`, error.message);
+      await message.channel.send({
+        content: "That answer was right, but I couldn't give you the verified role. Please contact staff.",
+        allowedMentions: { parse: [] },
+      });
+    }
+    return true;
+  }
+
+  challenge.attempts += 1;
+  if (challenge.attempts >= VERIFICATION_MAX_ATTEMPTS) {
+    challenge.answer = createCaptchaAnswer();
+    challenge.attempts = 0;
+    challenge.expiresAt = Date.now() + VERIFICATION_TTL_MS;
+    persistPendingVerifications();
+    await sendVerificationCaptcha(
+      message.channel,
+      challenge,
+      "That was five incorrect tries, so here's a new captcha."
+    );
+  } else {
+    persistPendingVerifications();
+    await message.channel.send({
+      content: `That wasn't quite right. Try again (${challenge.attempts}/${VERIFICATION_MAX_ATTEMPTS}).`,
+      allowedMentions: { parse: [] },
+    });
+  }
+  return true;
+}
 
 function loadHandoffs() {
   try {
@@ -468,6 +893,8 @@ async function logModerationAction(
 function isModerationExempt(message) {
   const channel = message.channel;
   if (message.channelId === MODERATION_LOG_CHANNEL_ID) return true;
+  if (message.channelId === VERIFICATION_CHANNEL_ID) return true;
+  if (channel.isThread() && pendingVerifications.has(channel.id)) return true;
   if (
     channel.isThread() &&
     channel.parentId === TICKET_PARENT_CHANNEL_ID &&
@@ -486,7 +913,7 @@ function explicitlyRequestsStaff(text) {
   return /\b(staff|moderator|moderators|human|real person|someone real|talk to a person)\b/i.test(text);
 }
 
-client.once(Events.ClientReady, (readyClient) => {
+client.once(Events.ClientReady, async (readyClient) => {
   console.log(`AnchorFall AI is online as ${readyClient.user.tag}`);
   if (!aiClient) {
     console.warn("GROQ_API_KEY is not set; tickets will be handed to staff without AI replies.");
@@ -499,9 +926,33 @@ client.once(Events.ClientReady, (readyClient) => {
     console.warn("MODERATION_LOG_CHANNEL_ID is not set; moderation actions will only appear in the process log.");
   }
 
+  if (!VERIFICATION_ENABLED) {
+    console.log("Captcha verification is disabled; set VERIFICATION_CHANNEL_ID and VERIFIED_ROLE_ID to enable it.");
+  } else {
+    console.log("Image captcha verification is enabled.");
+    await resumePendingVerifications();
+  }
+
 });
 
 const moderationMessagesInFlight = new Set();
+
+client.on(Events.GuildMemberAdd, async (member) => {
+  if (!VERIFICATION_ENABLED || member.user.bot) return;
+  try {
+    await createVerificationThread(member);
+  } catch (error) {
+    console.error(`Could not start verification for new member ${member.id}:`, error.message);
+  }
+});
+
+client.on(Events.MessageCreate, async (message) => {
+  try {
+    await handleVerificationMessage(message);
+  } catch (error) {
+    console.error("Verification handler failed:", error);
+  }
+});
 
 client.on(Events.MessageCreate, async (message) => {
   if (!MESSAGE_MODERATION_ENABLED) return;
@@ -707,3 +1158,4 @@ client.login(BOT_TOKEN).catch((error) => {
   console.error("Discord login failed:", error);
   process.exitCode = 1;
 });
+
