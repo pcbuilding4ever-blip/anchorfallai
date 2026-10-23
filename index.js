@@ -31,6 +31,23 @@ const MODERATION_TIMEOUTS = {
   violation: 3 * 60 * 60 * 1000,
   uncertain: 60 * 60 * 1000,
 };
+const MODERATION_REVIEW_PATTERNS = [
+  /\bnitro\b/i,
+  /\bgiveaways?\b/i,
+  /\bbio\b/i,
+  /\bdms?\b/i,
+  /\bscam(?:s|m{1,2}ing)?\b/i,
+  /\bfree\b/i,
+  /\b(?:claim|redeem|verify|verification)\b/i,
+  /\b(?:password|login code|2fa|token)\b/i,
+  /\b(?:real[- ]money|irl trading|paypal|cash ?app|venmo)\b/i,
+  /\b(?:casino|gambling|betting|wager)\b/i,
+  /\b(?:sell|selling|buy|buying)\b/i,
+  /\b(?:join|check out|follow|subscribe)\s+my\b/i,
+  /\bmy (?:server|channel|discord|youtube|twitch|shop)\b/i,
+  /discord\.gg\/\S+/i,
+  /https?:\/\/\S+/i,
+];
 
 if (!BOT_TOKEN) {
   console.error("Missing BOT_TOKEN environment variable.");
@@ -356,6 +373,10 @@ function moderationCategoryLabel(category) {
   }[category] || "Other";
 }
 
+function hasModerationReviewKeyword(content) {
+  return MODERATION_REVIEW_PATTERNS.some((pattern) => pattern.test(content));
+}
+
 async function logModerationAction(
   message,
   assessment,
@@ -365,12 +386,14 @@ async function logModerationAction(
 ) {
   const titles = {
     clear: "Safe message",
+    filtered: "Keyword scan — no match",
     uncertain: "1-hour timeout",
     violation: "3-hour timeout",
     unavailable: "AI check unavailable",
   };
   const colors = {
     clear: 0x2ecc71,
+    filtered: 0x2ecc71,
     uncertain: 0xf39c12,
     violation: 0xe74c3c,
     unavailable: 0x95a5a6,
@@ -378,6 +401,8 @@ async function logModerationAction(
   let action;
   if (assessment.decision === "clear") {
     action = "Safe — no timeout applied";
+  } else if (assessment.decision === "filtered") {
+    action = "No review keyword matched — AI check skipped; no timeout applied";
   } else if (assessment.decision === "unavailable") {
     action = "AI check unavailable — no timeout applied";
   } else if (timeoutError) {
@@ -403,7 +428,11 @@ async function logModerationAction(
       .addFields(
         { name: "Member", value: message.author.tag + " (" + message.author.id + ")" },
         { name: "Category", value: moderationCategoryLabel(assessment.category), inline: true },
-        { name: "AI assessment", value: assessment.decision, inline: true },
+        {
+          name: assessment.decision === "filtered" ? "Local filter" : "AI assessment",
+          value: assessment.decision,
+          inline: true,
+        },
         { name: "Reason", value: suppressMentions(assessment.reason).slice(0, 1000) },
         { name: "Message", value: shownText },
         { name: "Source", value: "[Open message](" + message.url + ")" }
@@ -493,6 +522,15 @@ client.on(Events.MessageCreate, async (message) => {
         decision: "unavailable",
         category: "none",
         reason: "No readable text was available; attachments were not analyzed.",
+      });
+      return;
+    }
+
+    if (!hasModerationReviewKeyword(message.content)) {
+      await logModerationAction(message, {
+        decision: "filtered",
+        category: "none",
+        reason: "No review keyword matched; the message was not sent to Groq.",
       });
       return;
     }
