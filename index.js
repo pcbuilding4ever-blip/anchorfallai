@@ -460,7 +460,14 @@ client.on(Events.MessageCreate, async (message) => {
     const member =
       message.member ||
       (await message.guild.members.fetch(message.author.id).catch(() => null));
-    if (!member) return;
+    if (!member) {
+      await logModerationAction(message, {
+        decision: "unavailable",
+        category: "none",
+        reason: "The guild member could not be fetched; no timeout was applied.",
+      });
+      return;
+    }
 
     if (member.roles.cache.has(STAFF_ROLE_ID)) {
       await logModerationAction(message, {
